@@ -1,0 +1,195 @@
+tracking aap code for aap development 
+/* Android App: Real-Time Phone Tracker (Full Services Integrated) Features:
+
+Firebase Auth (Login & Signup)
+
+Realtime Firebase Database
+
+Google Maps Live Tracking
+
+SIM Change Detection
+
+Background Location Tracking (Foreground Service) */
+
+
+// MainActivity.kt package com.example.realtimetracker
+
+import android.Manifest import android.content.Context import android.content.Intent import android.content.pm.PackageManager import android.os.Bundle import android.telephony.TelephonyManager import android.util.Log import android.widget.Button import androidx.appcompat.app.AppCompatActivity import androidx.core.app.ActivityCompat import com.google.android.gms.location.* import com.google.android.gms.maps.CameraUpdateFactory import com.google.android.gms.maps.GoogleMap import com.google.android.gms.maps.OnMapReadyCallback import com.google.android.gms.maps.SupportMapFragment import com.google.android.gms.maps.model.LatLng import com.google.android.gms.maps.model.MarkerOptions import com.google.firebase.auth.FirebaseAuth import com.google.firebase.database.FirebaseDatabase
+
+class MainActivity : AppCompatActivity(), OnMapReadyCallback {
+
+private lateinit var fusedLocationClient: FusedLocationProviderClient
+private lateinit var locationCallback: LocationCallback
+private lateinit var mMap: GoogleMap
+private val locationRequest = LocationRequest.create().apply {
+    interval = 10000
+    fastestInterval = 5000
+    priority = LocationRequest.PRIORITY_HIGH_ACCURACY
+}
+private lateinit var auth: FirebaseAuth
+
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(R.layout.activity_main)
+
+    auth = FirebaseAuth.getInstance()
+    fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+    val mapFragment = supportFragmentManager.findFragmentById(R.id.map) as SupportMapFragment
+    mapFragment.getMapAsync(this)
+
+    findViewById<Button>(R.id.logout_button).setOnClickListener {
+        auth.signOut()
+        startActivity(Intent(this, LoginActivity::class.java))
+        finish()
+    }
+
+    locationCallback = object : LocationCallback() {
+        override fun onLocationResult(locationResult: LocationResult) {
+            for (location in locationResult.locations) {
+                val lat = location.latitude
+                val lon = location.longitude
+                updateMapLocation(lat, lon)
+                uploadLocation(lat, lon)
+            }
+        }
+    }
+
+    checkSimChange()
+    startLocationUpdates()
+    startForegroundService(Intent(this, LocationForegroundService::class.java))
+}
+
+override fun onMapReady(googleMap: GoogleMap) {
+    mMap = googleMap
+}
+
+private fun updateMapLocation(lat: Double, lon: Double) {
+    val latLng = LatLng(lat, lon)
+    mMap.clear()
+    mMap.addMarker(MarkerOptions().position(latLng).title("Current Location"))
+    mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(latLng, 15f))
+}
+
+private fun startLocationUpdates() {
+    if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 1001)
+        return
+    }
+    fusedLocationClient.requestLocationUpdates(locationRequest, locationCallback, mainLooper)
+}
+
+private fun uploadLocation(lat: Double, lon: Double) {
+    val userId = auth.currentUser?.uid ?: "user123"
+    val db = FirebaseDatabase.getInstance().getReference("locations").child(userId)
+
+    val locationData = mapOf(
+        "latitude" to lat,
+        "longitude" to lon,
+        "timestamp" to System.currentTimeMillis()
+    )
+    db.setValue(locationData).addOnSuccessListener {
+        Log.d("Firebase", "Location uploaded")
+    }.addOnFailureListener {
+        Log.e("Firebase", "Failed to upload location")
+    }
+}
+
+private fun checkSimChange() {
+    val tm = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+    val simSerial = tm.simSerialNumber ?: "unknown"
+    val sharedPrefs = getSharedPreferences("TrackerPrefs", MODE_PRIVATE)
+    val savedSim = sharedPrefs.getString("simSerial", "")
+
+    if (savedSim != simSerial) {
+        sharedPrefs.edit().putString("simSerial", simSerial).apply()
+        Log.w("SIM", "SIM has been changed!")
+        // Notify user or admin
+    }
+}
+
+override fun onDestroy() {
+    super.onDestroy()
+    fusedLocationClient.removeLocationUpdates(locationCallback)
+}
+
+}
+
+// LoginActivity.kt package com.example.realtimetracker
+
+import android.content.Intent import android.os.Bundle import android.util.Log import android.widget.Button import android.widget.EditText import android.widget.Toast import androidx.appcompat.app.AppCompatActivity import com.google.firebase.auth.FirebaseAuth
+
+class LoginActivity : AppCompatActivity() {
+
+private lateinit var auth: FirebaseAuth
+
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    setContentView(R.layout.activity_login)
+
+    auth = FirebaseAuth.getInstance()
+
+    findViewById<Button>(R.id.login_button).setOnClickListener {
+        val email = findViewById<EditText>(R.id.email).text.toString()
+        val password = findViewById<EditText>(R.id.password).text.toString()
+        loginUser(email, password)
+    }
+
+    findViewById<Button>(R.id.signup_button).setOnClickListener {
+        val email = findViewById<EditText>(R.id.email).text.toString()
+        val password = findViewById<EditText>(R.id.password).text.toString()
+        signupUser(email, password)
+    }
+}
+
+private fun loginUser(email: String, password: String) {
+    auth.signInWithEmailAndPassword(email, password)
+        .addOnCompleteListener(this) { task ->
+            if (task.isSuccessful) {
+                startActivity(Intent(this, MainActivity::class.java))
+                finish()
+            } else {
+                Toast.makeText(this, "Login failed", Toast.LENGTH_SHORT).show()
+            }
+        }
+}
+
+private fun signupUser(email: String, password: String) {
+    auth.createUserWithEmailAndPassword(email, password)
+        .addOnCompleteListener(this) { task ->
+            if (task.isSuccessful) {
+                loginUser(email, password)
+            } else {
+                Toast.makeText(this, "Signup failed", Toast.LENGTH_SHORT).show()
+            }
+        }
+}
+
+}
+
+// LocationForegroundService.kt package com.example.realtimetracker
+
+import android.app.Notification import android.app.NotificationChannel import android.app.NotificationManager import android.app.Service import android.content.Intent import android.os.Build import android.os.IBinder
+
+class LocationForegroundService : Service() { override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { val channel = NotificationChannel("location", "Location Tracking", NotificationManager.IMPORTANCE_LOW) val manager = getSystemService(NotificationManager::class.java) manager.createNotificationChannel(channel) val notification: Notification = Notification.Builder(this, "location") .setContentTitle("Tracking location") .setSmallIcon(R.drawable.ic_launcher_foreground) .build() startForeground(1, notification) } return START_STICKY }
+
+override fun onBind(intent: Intent?): IBinder? = null
+
+}
+
+// AndroidManifest.xml
+
+<!--
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.READ_PHONE_STATE" />
+<uses-permission android:name="android.permission.INTERNET" />
+
+<application ... >
+    <activity android:name=".LoginActivity" />
+    <activity android:name=".MainActivity" />
+    <service android:name=".LocationForegroundService" android:foregroundServiceType="location" />
+    <meta-data android:name="com.google.android.geo.API_KEY" android:value="YOUR_GOOGLE_MAPS_API_KEY" />
+</application>
+-->// build.gradle (app-level) /* dependencies { implementation 'com.google.android.gms:play-services-location:21.0.1' implementation 'com.google.firebase:firebase-database-ktx' implementation 'com.google.firebase:firebase-auth-ktx' implementation 'com.google.android.gms:play-services-maps:18.1.0' implementation 'androidx.core:core-ktx:1.9.0' } apply plugin: 'com.google.gms.google-services' */
